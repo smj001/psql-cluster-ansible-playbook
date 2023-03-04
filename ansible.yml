@@ -1,0 +1,92 @@
+---
+- hosts: all
+  become: true
+  vars:
+    postgres_user: "{{ postgres_user | default('postgres') }}"
+    postgres_db: "{{ postgres_db | default('mydb') }}"
+    postgres_password: "{{ postgres_password | default('mypassword') }}"
+    pg_cluster_name: "{{ pg_cluster_name | default('main') }}"
+    pg_data_directory: "/var/lib/postgresql/{{ postgres_version }}/{{ pg_cluster_name }}"
+    pg_hba_conf_file: "/etc/postgresql/{{ postgres_version }}/{{ pg_cluster_name }}/pg_hba.conf"
+    pg_conf_file: "/etc/postgresql/{{ postgres_version }}/{{ pg_cluster_name }}/postgresql.conf"
+  tasks:
+    - name: Install PostgreSQL
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop:
+        - postgresql
+        - postgresql-contrib
+        - postgresql-client
+
+    - name: Update postgresql.conf
+      template:
+        src: postgresql.conf.j2
+        dest: "{{ pg_conf_file }}"
+      notify: restart postgresql
+
+    - name: Update pg_hba.conf
+      template:
+        src: pg_hba.conf.j2
+        dest: "{{ pg_hba_conf_file }}"
+      notify: reload postgresql
+
+    - name: Create PostgreSQL cluster
+      become_user: postgres
+      command: "/usr/bin/pg_createcluster {{ postgres_version }} {{ pg_cluster_name }} -d {{ pg_data_directory }} --start"
+      creates: "{{ pg_data_directory }}/PG_VERSION"
+      notify: restart postgresql
+
+    - name: Create database and user
+      become_user: postgres
+      postgresql_user:
+        name: "{{ postgres_user }}"
+        password: "{{ postgres_password }}"
+        encrypted: yes
+        login_user: postgres
+        login_password: ""
+      become: true
+
+    - name: Create database
+      become_user: postgres
+      postgresql_db:
+        name: "{{ postgres_db }}"
+        owner: "{{ postgres_user }}"
+        login_user: postgres
+        login_password: ""
+      become: true
+
+    - name: Wait for PostgreSQL to start
+      wait_for:
+        port: 5432
+        host: 127.0.0.1
+        delay: 5
+        timeout: 60
+      become: true
+
+    - name: Check PostgreSQL cluster health
+      become_user: postgres
+      postgresql_query:
+        query: "SELECT 1"
+        login_user: postgres
+        login_password: ""
+      become: true
+      register: pg_health_check
+
+    - name: Display PostgreSQL health check result
+      debug:
+        var: pg_health_check.stdout_lines
+
+  handlers:
+    - name: restart postgresql
+      become: true
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: reload postgresql
+      become: true
+      service:
+        name: postgresql
+        state: reloaded
